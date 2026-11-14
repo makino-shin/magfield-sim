@@ -1,0 +1,7 @@
+streamlit
+magpylib
+matplotlib
+numpy
+pandas
+scipy
+matplotlib-fontja

@@ -10,6 +10,9 @@
 
 単位: 長さ mm / 磁場 mT / 残留磁束密度 T
 """
+import json
+from datetime import datetime
+from zoneinfo import ZoneInfo
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -47,6 +50,57 @@ if "magnets" not in st.session_state:
 SENSOR_COLUMNS = ["表示", "名前", "X", "Y", "Z"]
 if "sensors" not in st.session_state:   # センサの表の元データ（磁石と同じく、編集結果は書き戻さない）
     st.session_state.sensors = pd.DataFrame([[True, "センサ1", 0.0, 0.0, 0.0]], columns=SENSOR_COLUMNS)
+
+# 表示設定の初期値（ウィジェットの key と同じ名前で session_state に置く）
+PLANES = ["XZ（Y=一定）", "XY（Z=一定）", "YZ（X=一定）"]
+VIEW_DEFAULTS = {"plane": PLANES[0], "offset": 0.0, "half": 25, "res": 160, "density": 1.5, "show_bg": True}
+for k, v in VIEW_DEFAULTS.items():
+    st.session_state.setdefault(k, v)
+st.session_state.setdefault("ver", 0)   # 設定ファイルを読み込むたびに増やし、表をリセットする
+
+# ---------- 設定ファイル（保存・読み込み） ----------
+MAGNET_DEFAULTS = {"表示": True, "名前": "磁石", "形状": "角形", "寸法1": 5.0, "寸法2": 5.0, "寸法3": 5.0,
+                   "Br[T]": 1.2, "着磁方向": "+Z", "X": 0.0, "Y": 0.0, "Z": 0.0,
+                   "回転X": 0.0, "回転Y": 0.0, "回転Z": 0.0}
+SENSOR_DEFAULTS = {"表示": True, "名前": "センサ", "X": 0.0, "Y": 0.0, "Z": 0.0}
+
+def records(df):
+    """DataFrame → JSON にできる素の Python 型のリスト"""
+    out = []
+    for r in df.to_dict("records"):
+        row = {}
+        for k, v in r.items():
+            if hasattr(v, "item"):
+                v = v.item()          # numpy の数値・bool → Python の型
+            if isinstance(v, float) and np.isnan(v):
+                v = None
+            row[k] = v
+        out.append(row)
+    return out
+
+def make_config(magnets_df, sensors_df):
+    return {
+        "app": "magnet_viewer", "version": 1,
+        "view": {k: st.session_state[k] for k in VIEW_DEFAULTS},
+        "magnets": records(magnets_df),
+        "sensors": records(sensors_df),
+    }
+
+def table_from(rows, columns, defaults):
+    rows = [{c: (r.get(c) if r.get(c) is not None else defaults[c]) for c in columns} for r in rows or []]
+    return pd.DataFrame(rows, columns=columns)
+
+def apply_config(cfg):
+    if not isinstance(cfg, dict) or "magnets" not in cfg:
+        raise ValueError("磁界ビューアの設定ファイルではないようです")
+    st.session_state.magnets = table_from(cfg.get("magnets"), COLUMNS, MAGNET_DEFAULTS)
+    st.session_state.sensors = table_from(cfg.get("sensors"), SENSOR_COLUMNS, SENSOR_DEFAULTS)
+    view = cfg.get("view", {})
+    for k, d in VIEW_DEFAULTS.items():
+        v = view.get(k, d)
+        if k == "plane" and v not in PLANES:
+            v = d
+        st.session_state[k] = type(d)(v)
 
 # ---------- 磁石オブジェクトをつくる ----------
 def build_magnets(df):
@@ -92,14 +146,29 @@ def inside_mask(mags, pts):
 
 # ---------- 画面: サイドバー ----------
 with st.sidebar:
+    st.header("設定ファイル")
+    save_box = st.container()   # 保存ボタンは表の内容が決まった後（ページ下部の処理）でここに置く
+    up = st.file_uploader("設定ファイルを読み込む", type="json", key=f"uploader_{st.session_state.ver}",
+                          help="以前に保存した JSON ファイルを選ぶと、磁石・センサ・表示設定がその状態に戻ります")
+    if up is not None:
+        try:
+            apply_config(json.loads(up.getvalue().decode("utf-8")))
+            st.session_state.ver += 1          # 表とアップローダーをリセット（同じファイルを何度も適用しないため）
+            st.session_state.load_msg = f"「{up.name}」を読み込みました"
+            st.rerun()
+        except (ValueError, UnicodeDecodeError) as e:
+            st.error(f"読み込めませんでした：{e}")
+    if "load_msg" in st.session_state:
+        st.success(st.session_state.pop("load_msg"))
+
     st.header("表示の設定")
-    plane = st.selectbox("断面", ["XZ（Y=一定）", "XY（Z=一定）", "YZ（X=一定）"])
-    offset = st.number_input("断面の位置 [mm]", value=0.0, step=0.5)
-    half = st.slider("表示範囲 ±[mm]", 5, 100, 25)
-    res = st.slider("格子の細かさ", 60, 300, 160, step=20,
+    plane = st.selectbox("断面", PLANES, key="plane")
+    offset = st.number_input("断面の位置 [mm]", step=0.5, key="offset")
+    half = st.slider("表示範囲 ±[mm]", 5, 100, key="half")
+    res = st.slider("格子の細かさ", 60, 300, step=20, key="res",
                     help="大きいほどきれいだが計算が遅くなる")
-    density = st.slider("磁力線の密度", 0.5, 4.0, 1.5, step=0.1)
-    show_bg = st.checkbox("磁場の強さを背景色で表示", value=True)
+    density = st.slider("磁力線の密度", 0.5, 4.0, step=0.1, key="density")
+    show_bg = st.checkbox("磁場の強さを背景色で表示", key="show_bg")
 
 
 # ---------- 画面: 磁石の表 ----------
@@ -109,7 +178,7 @@ st.caption("表の最下行の ＋ で磁石を追加、行を選んで 🗑 で
 
 edited = st.data_editor(
     st.session_state.magnets,
-    key="magnet_editor",
+    key=f"magnet_editor_{st.session_state.ver}",
     num_rows="dynamic",
     width="stretch",
     column_config={
@@ -137,7 +206,7 @@ st.subheader("センサ")
 st.caption("磁石と同じく、最下行の ＋ で追加、🗑 で削除。断面から外れたセンサは薄く表示されます。")
 sensors = st.data_editor(
     st.session_state.sensors,
-    key="sensor_editor",
+    key=f"sensor_editor_{st.session_state.ver}",
     num_rows="dynamic",
     width="stretch",
     column_config={
@@ -148,6 +217,14 @@ sensors = st.data_editor(
         "Z": st.column_config.NumberColumn("Z[mm]", default=0.0, step=0.5),
     },
 )
+with save_box:
+    st.download_button(
+        "現在の設定を保存（JSON）",
+        data=json.dumps(make_config(edited, sensors), ensure_ascii=False, indent=2),
+        file_name=f"magnet_viewer_{datetime.now(ZoneInfo('Asia/Tokyo')):%Y%m%d_%H%M}.json",
+        mime="application/json", width="stretch",
+    )
+
 sensor_list = []
 for i, r in sensors.iterrows():
     try:

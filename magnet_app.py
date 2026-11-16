@@ -246,9 +246,9 @@ u = np.linspace(-half, half, res)          # 図の横軸
 v = np.linspace(-half, half, res)          # 図の縦軸
 U, V = np.meshgrid(u, v)
 if plane.startswith("XZ"):
-    # 横 = Z（軸方向）、縦 = X
-    pts = np.stack([V.ravel(), np.full(U.size, offset), U.ravel()], axis=1)
-    iu, iv, labels = 2, 0, ("Z [mm]", "X [mm]")
+    # 横 = X、縦 = Z（Z が上）
+    pts = np.stack([U.ravel(), np.full(U.size, offset), V.ravel()], axis=1)
+    iu, iv, labels = 0, 2, ("X [mm]", "Z [mm]")
 elif plane.startswith("XY"):
     pts = np.stack([U.ravel(), V.ravel(), np.full(U.size, offset)], axis=1)
     iu, iv, labels = 0, 1, ("X [mm]", "Y [mm]")
